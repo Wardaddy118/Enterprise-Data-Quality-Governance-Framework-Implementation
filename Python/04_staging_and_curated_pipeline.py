@@ -7,27 +7,47 @@
 
 # COMMAND ----------
 
-COMMUNITY_EDITION = False
-CATALOG  = "fieldops_dq"
-RAW      = "raw"
-STAGING  = "stg"
-CURATED  = "curated"
-DQ       = "dq"
-AUDIT    = "audit"
+# -- Resolve runtime config written by notebook 01 ------------
+def _load_pipeline_config():
+    candidates = [
+        "fieldops_dq.audit.pipeline_config",        # dedicated-catalog branch
+        "workspace.fieldops_audit.pipeline_config", # fallback branch
+    ]
+    for tbl in candidates:
+        try:
+            rows = spark.table(tbl).collect()
+            cfg = {row["config_key"]: row["config_value"] for row in rows}
+            print(f"Loaded config from {tbl}")
+            return cfg
+        except Exception:
+            continue
+    raise RuntimeError(
+        "pipeline_config not found. Run notebook 01 first - it resolves "
+        "and persists the catalog/schema configuration."
+    )
 
-def r(t): return f"{CATALOG}.{RAW}.{t}"     if not COMMUNITY_EDITION else f"{RAW}.{t}"
-def s(t): return f"{CATALOG}.{STAGING}.{t}" if not COMMUNITY_EDITION else f"{STAGING}.{t}"
-def c(t): return f"{CATALOG}.{CURATED}.{t}" if not COMMUNITY_EDITION else f"{CURATED}.{t}"
-def dq(t): return f"{CATALOG}.{DQ}.{t}"     if not COMMUNITY_EDITION else f"{DQ}.{t}"
+_cfg     = _load_pipeline_config()
+CATALOG  = _cfg["CATALOG"]
+RAW      = _cfg["RAW"]
+STAGING  = _cfg.get("STAGING",  "stg")
+CURATED  = _cfg.get("CURATED",  "curated")
+DQ       = _cfg.get("DQ",       "dq")
+AUDIT    = _cfg.get("AUDIT",    "audit")
+print(f"  CATALOG={CATALOG} RAW={RAW} STG={STAGING} CURATED={CURATED} DQ={DQ} AUDIT={AUDIT}")
+
+def r(t):  return f"{CATALOG}.{RAW}.{t}"
+def s(t):  return f"{CATALOG}.{STAGING}.{t}"
+def c(t):  return f"{CATALOG}.{CURATED}.{t}"
+def dq(t): return f"{CATALOG}.{DQ}.{t}"
 
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-RUN_ID   = f"RUN-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+RUN_ID   = f"RUN-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
 BATCH_ID = "BATCH-20240110"
-LOAD_TS  = datetime.utcnow()
+LOAD_TS  = datetime.now(timezone.utc)
 
 print(f"Run ID: {RUN_ID}")
 
@@ -75,7 +95,7 @@ stg_cust = (deduped
         F.upper(F.trim(F.col("customer_type"))) == "SMB", "SMB").otherwise("UNKNOWN"))
 
     # credit_limit — coerce to double, None if unparseable
-    .withColumn("credit_limit_d", F.col("credit_limit").cast("double"))
+    .withColumn("credit_limit_d", F.try_cast(F.col("credit_limit"), "double"))
 
     # Dates
     .withColumn("created_date_d",   F.to_date("created_date"))
@@ -200,11 +220,11 @@ stg_wo = (wo_deduped
     .withColumn("start_ts",   F.to_timestamp("actual_start"))
     .withColumn("end_ts",     F.to_timestamp("actual_end"))
     .withColumn("sla_ts",     F.to_timestamp("sla_due_date"))
-    .withColumn("lc",         F.col("labor_cost").cast("double"))
-    .withColumn("pc",         F.col("parts_cost").cast("double"))
-    .withColumn("tc",         F.col("total_cost").cast("double"))
-    .withColumn("ah",         F.col("actual_hours").cast("double"))
-    .withColumn("eh",         F.col("estimated_hours").cast("double"))
+    .withColumn("lc",         F.try_cast(F.col("labor_cost"), "double"))
+    .withColumn("pc",         F.try_cast(F.col("parts_cost"), "double"))
+    .withColumn("tc",         F.try_cast(F.col("total_cost"), "double"))
+    .withColumn("ah",         F.try_cast(F.col("actual_hours"), "double"))
+    .withColumn("eh",         F.try_cast(F.col("estimated_hours"), "double"))
 
     # Status normalization
     .withColumn("status_std",
@@ -310,7 +330,7 @@ stg_tech = (raw_tech
     .filter(F.col("rn") == 1)
     .withColumn("hire_d", F.to_date("hire_date"))
     .withColumn("term_d", F.to_date("termination_date"))
-    .withColumn("rate_d", F.col("hourly_rate").cast("double"))
+    .withColumn("rate_d", F.try_cast(F.col("hourly_rate"), "double"))
 
     .withColumn("status_std",
         F.when(F.upper(F.trim(F.regexp_replace("employment_status"," ","_"))).isin("ACTIVE","ACTVE"), "ACTIVE")
@@ -513,7 +533,7 @@ print(f"  {'Customers — NULL name':<40} {r_null_name:>8}  {s_null_name:>10}  {
 print(f"  {'Customers — Invalid status':<40} {r_inv_status:>8}  {s_inv_status:>10}  {'0':>10}")
 print(f"  {'Customers — Duplicate IDs':<40} {r_dups:>8}  {s_dups:>10}  {'0':>10}")
 
-r_neg = raw_wo_t.filter((F.col("labor_cost").cast("double") < 0) | (F.col("parts_cost").cast("double") < 0)).count()
+r_neg = raw_wo_t.filter((F.try_cast(F.col("labor_cost"), "double") < 0) | (F.try_cast(F.col("parts_cost"), "double") < 0)).count()
 s_neg = stg_wo_t.filter(F.col("is_quarantined") == False).filter((F.col("labor_cost") < 0) | (F.col("parts_cost") < 0)).count()
 print(f"  {'Work Orders — Negative costs':<40} {r_neg:>8}  {s_neg:>10}  {'0':>10}")
 
@@ -533,7 +553,7 @@ print(f"  {'Total work order records':<40} {raw_wo_t.count():>8}  {stg_wo_t.filt
 
 run_log = spark.createDataFrame([(
     RUN_ID, "fieldops_dq_pipeline",
-    LOAD_TS, datetime.utcnow(),
+    LOAD_TS, datetime.now(timezone.utc),
     "COMPLETED",
     raw_c.count() + raw_wo_t.count(),
     stg_c.count() + stg_wo_t.count(),
@@ -543,7 +563,7 @@ run_log = spark.createDataFrame([(
     "notebook"
 )], "run_id STRING, pipeline_name STRING, run_start TIMESTAMP, run_end TIMESTAMP, status STRING, records_extracted LONG, records_staged LONG, records_quarantined LONG, records_curated LONG, dq_score DOUBLE, error_message STRING, triggered_by STRING")
 
-run_log.write.format("delta").mode("append").saveAsTable(f"{CATALOG}.{AUDIT}.pipeline_runs" if not COMMUNITY_EDITION else f"{AUDIT}.pipeline_runs")
+run_log.write.format("delta").mode("append").saveAsTable(f"{CATALOG}.{AUDIT}.pipeline_runs")
 
 print(f"\nPipeline run logged: {RUN_ID}")
 print("Next: Run notebook 05_python_connection to query from external Python")

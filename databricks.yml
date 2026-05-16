@@ -1,0 +1,14 @@
+sync:
+  include:
+    - "Python/**"
+    - "Databricks/**"
+    - "SQL/**"
+    - "README.md"
+  exclude:
+    - "**/__pycache__/**"
+    - "**/.ipynb_checkpoints/**"
+    - ".env"
+    - "**/*.pyc"
+    - ".databricks/**"
+    - ".venv/**"
+    - "**/.venv/**"

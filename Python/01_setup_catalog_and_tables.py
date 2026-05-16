@@ -14,21 +14,44 @@
 
 # COMMAND ----------
 
-COMMUNITY_EDITION = False   # Set True if using free Community Edition
+# ── Environment-adaptive configuration ────────────────────────
+# Free Edition gotcha: CREATE CATALOG is a *metastore-level* privilege.
+# Auto-enabled workspaces (incl. Free Edition) assign NO metastore admin
+# by default, so a workspace admin may still be denied CREATE CATALOG.
+# We therefore PROBE for the privilege and fall back to the pre-provisioned
+# `workspace` catalog with schema-name prefixes if needed. This keeps the
+# repo runnable by anyone who clones it, regardless of permission level.
 
-CATALOG  = "fieldops_dq"    # Unity Catalog name (paid only)
-RAW      = "raw"
-STAGING  = "stg"
-CURATED  = "curated"
-DQ       = "dq"
-AUDIT    = "audit"
+PREFERRED_CATALOG = "fieldops_dq"   # used if we can create catalogs
+FALLBACK_CATALOG  = "workspace"     # always present on Free Edition
+
+def _can_create_catalog():
+    probe = "fieldops_dq_perm_probe"
+    try:
+        spark.sql(f"CREATE CATALOG IF NOT EXISTS {probe}")
+        spark.sql(f"DROP CATALOG IF EXISTS {probe}")
+        return True
+    except Exception as e:
+        print(f"  CREATE CATALOG denied ({type(e).__name__}); using fallback.")
+        return False
+
+USE_DEDICATED_CATALOG = _can_create_catalog()
+
+if USE_DEDICATED_CATALOG:
+    CATALOG = PREFERRED_CATALOG
+    RAW, STAGING, CURATED, DQ, AUDIT = "raw", "stg", "curated", "dq", "audit"
+else:
+    # Single shared catalog -> namespace the layer into the schema name
+    CATALOG = FALLBACK_CATALOG
+    RAW, STAGING, CURATED, DQ, AUDIT = (
+        "fieldops_raw", "fieldops_stg", "fieldops_curated",
+        "fieldops_dq", "fieldops_audit")
+
+COMMUNITY_EDITION = False   # legacy flag kept for downstream notebook compatibility
 
 def full(schema, table=""):
-    """Return fully-qualified table reference."""
-    if COMMUNITY_EDITION:
-        ref = f"{schema}"
-    else:
-        ref = f"{CATALOG}.{schema}"
+    """Return fully-qualified table reference (always 3-level under UC)."""
+    ref = f"{CATALOG}.{schema}"
     return ref if not table else f"{ref}.{table}"
 
 print(f"Mode          : {'Community Edition' if COMMUNITY_EDITION else 'Unity Catalog'}")
@@ -43,9 +66,9 @@ print(f"Curated schema: {full(CURATED)}")
 
 # COMMAND ----------
 
-if not COMMUNITY_EDITION:
+if USE_DEDICATED_CATALOG:
     spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
-    spark.sql(f"USE CATALOG {CATALOG}")
+spark.sql(f"USE CATALOG {CATALOG}")
 
 for schema in [RAW, STAGING, CURATED, DQ, AUDIT]:
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {full(schema)}")
@@ -608,4 +631,47 @@ COMMENT 'Invoice fact table — financial grain'
 """)
 
 print("Curated tables created.")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## 7 — Persist resolved configuration
+# MAGIC The catalog/schema names were resolved at runtime (dedicated vs fallback).
+# MAGIC Downstream notebooks (02, 02b, 03, 04) must NOT hardcode them — they read
+# MAGIC this table so there is a single source of truth and zero config drift.
+
+# COMMAND ----------
+
+from datetime import datetime, timezone
+
+# AUDIT schema always exists by this point regardless of branch
+_cfg_table = f"{CATALOG}.{AUDIT}.pipeline_config"
+
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {_cfg_table} (
+    config_key    STRING NOT NULL,
+    config_value  STRING,
+    resolved_at   TIMESTAMP
+)
+USING DELTA
+COMMENT 'Runtime-resolved catalog/schema config — written by notebook 01, read by 02-04'
+""")
+
+# Overwrite (not append) so re-running 01 refreshes config cleanly
+_now = datetime.now(timezone.utc)
+_cfg_rows = [
+    ("CATALOG",  CATALOG,  _now),
+    ("RAW",      RAW,      _now),
+    ("STAGING",  STAGING,  _now),
+    ("CURATED",  CURATED,  _now),
+    ("DQ",       DQ,       _now),
+    ("AUDIT",    AUDIT,    _now),
+    ("USE_DEDICATED_CATALOG", str(USE_DEDICATED_CATALOG), _now),
+]
+(spark.createDataFrame(_cfg_rows, "config_key STRING, config_value STRING, resolved_at TIMESTAMP")
+      .write.format("delta").mode("overwrite").saveAsTable(_cfg_table))
+
+print(f"Config persisted to {_cfg_table}:")
+for k, v, _ in _cfg_rows:
+    print(f"  {k:<22} = {v}")
+
 print("\nAll schemas and tables ready. Run notebook 02 next.")

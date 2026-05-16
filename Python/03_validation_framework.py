@@ -7,23 +7,43 @@
 
 # COMMAND ----------
 
-COMMUNITY_EDITION = False
-CATALOG  = "fieldops_dq"
-RAW      = "raw"
-DQ       = "dq"
+# -- Resolve runtime config written by notebook 01 ------------
+def _load_pipeline_config():
+    candidates = [
+        "fieldops_dq.audit.pipeline_config",        # dedicated-catalog branch
+        "workspace.fieldops_audit.pipeline_config", # fallback branch
+    ]
+    for tbl in candidates:
+        try:
+            rows = spark.table(tbl).collect()
+            cfg = {row["config_key"]: row["config_value"] for row in rows}
+            print(f"Loaded config from {tbl}")
+            return cfg
+        except Exception:
+            continue
+    raise RuntimeError(
+        "pipeline_config not found. Run notebook 01 first - it resolves "
+        "and persists the catalog/schema configuration."
+    )
 
-def r(table):
-    return f"{CATALOG}.{RAW}.{table}" if not COMMUNITY_EDITION else f"{RAW}.{table}"
+_cfg     = _load_pipeline_config()
+CATALOG  = _cfg["CATALOG"]
+RAW      = _cfg["RAW"]
+STAGING  = _cfg.get("STAGING",  "stg")
+CURATED  = _cfg.get("CURATED",  "curated")
+DQ       = _cfg.get("DQ",       "dq")
+AUDIT    = _cfg.get("AUDIT",    "audit")
+print(f"  CATALOG={CATALOG} RAW={RAW} STG={STAGING} CURATED={CURATED} DQ={DQ} AUDIT={AUDIT}")
 
-def dq(table):
-    return f"{CATALOG}.{DQ}.{table}" if not COMMUNITY_EDITION else f"{DQ}.{table}"
+def r(table):  return f"{CATALOG}.{RAW}.{table}"
+def dq(table): return f"{CATALOG}.{DQ}.{table}"
 
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-RUN_ID   = f"RUN-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
+RUN_ID   = f"RUN-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:6].upper()}"
 RUN_DATE = date.today()
 results  = []   # collect all rule results in memory, bulk-insert at end
 
@@ -37,7 +57,7 @@ def check(rule_code, dq_dimension, target_table, severity, description, total, f
     results.append({
         "run_id": RUN_ID, "rule_code": rule_code, "dq_dimension": dq_dimension,
         "target_table": target_table, "severity": severity,
-        "execution_time": datetime.utcnow(), "total_records": int(total),
+        "execution_time": datetime.now(timezone.utc), "total_records": int(total),
         "failed_records": int(failed), "pass_rate": rate, "status": status,
         "details": description
     })
@@ -196,15 +216,15 @@ check("V-002","Validity","raw.work_orders","CRITICAL","WO status not in allowed 
 # V-003: Negative credit_limit (HIGH)
 failed = cust.filter(
     F.col("credit_limit").isNotNull() &
-    F.col("credit_limit").cast("double").isNotNull() &
-    (F.col("credit_limit").cast("double") < 0)
+    F.try_cast(F.col("credit_limit"), "double").isNotNull() &
+    (F.try_cast(F.col("credit_limit"), "double") < 0)
 ).count()
 check("V-003","Validity","raw.customers","HIGH","Negative credit_limit",n_cust,failed)
 
 # V-004: Unparseable credit_limit (HIGH)
 failed = cust.filter(
     F.col("credit_limit").isNotNull() &
-    F.col("credit_limit").cast("double").isNull()
+    F.try_cast(F.col("credit_limit"), "double").isNull()
 ).count()
 check("V-004","Validity","raw.customers","HIGH","credit_limit cannot be parsed as numeric",n_cust,failed)
 
@@ -218,17 +238,17 @@ check("V-005","Validity","raw.customers","MEDIUM","Invalid email format",n_cust,
 
 # V-006: Negative labor/parts/total cost on WOs (HIGH)
 failed = wo.filter(
-    (F.col("labor_cost").cast("double").isNotNull() & (F.col("labor_cost").cast("double") < 0)) |
-    (F.col("parts_cost").cast("double").isNotNull() & (F.col("parts_cost").cast("double") < 0)) |
-    (F.col("total_cost").cast("double").isNotNull() & (F.col("total_cost").cast("double") < 0))
+    (F.try_cast(F.col("labor_cost"), "double").isNotNull() & (F.try_cast(F.col("labor_cost"), "double") < 0)) |
+    (F.try_cast(F.col("parts_cost"), "double").isNotNull() & (F.try_cast(F.col("parts_cost"), "double") < 0)) |
+    (F.try_cast(F.col("total_cost"), "double").isNotNull() & (F.try_cast(F.col("total_cost"), "double") < 0))
 ).count()
 check("V-006","Validity","raw.work_orders","HIGH","Negative monetary value on WO",n_wo,failed)
 
 # V-007: Negative invoice amounts (CRITICAL — financial)
 failed = inv.filter(
-    (F.col("subtotal").cast("double").isNotNull()  & (F.col("subtotal").cast("double") < 0)) |
-    (F.col("total_amount").cast("double").isNotNull() & (F.col("total_amount").cast("double") < 0)) |
-    (F.col("payment_received").cast("double").isNotNull() & (F.col("payment_received").cast("double") < 0))
+    (F.try_cast(F.col("subtotal"), "double").isNotNull()  & (F.try_cast(F.col("subtotal"), "double") < 0)) |
+    (F.try_cast(F.col("total_amount"), "double").isNotNull() & (F.try_cast(F.col("total_amount"), "double") < 0)) |
+    (F.try_cast(F.col("payment_received"), "double").isNotNull() & (F.try_cast(F.col("payment_received"), "double") < 0))
 ).count()
 check("V-007","Validity","raw.invoices","CRITICAL","Negative financial amounts on invoice",n_inv,failed)
 
@@ -246,15 +266,15 @@ check("V-009","Validity","raw.technicians","HIGH","employment_status invalid dom
 
 # V-010: Negative hourly_rate (HIGH)
 failed = tech.filter(
-    F.col("hourly_rate").cast("double").isNotNull() &
-    (F.col("hourly_rate").cast("double") < 0)
+    F.try_cast(F.col("hourly_rate"), "double").isNotNull() &
+    (F.try_cast(F.col("hourly_rate"), "double") < 0)
 ).count()
 check("V-010","Validity","raw.technicians","HIGH","Negative hourly_rate",n_tech,failed)
 
 # V-011: Unrealistic hourly_rate > $500 (MEDIUM)
 failed = tech.filter(
-    F.col("hourly_rate").cast("double").isNotNull() &
-    (F.col("hourly_rate").cast("double") > 500)
+    F.try_cast(F.col("hourly_rate"), "double").isNotNull() &
+    (F.try_cast(F.col("hourly_rate"), "double") > 500)
 ).count()
 check("V-011","Validity","raw.technicians","MEDIUM","hourly_rate > $500 (suspect value)",n_tech,failed)
 
@@ -297,8 +317,8 @@ failed = cust.filter(
 check("V-017","Validity","raw.customers","HIGH","customer_type not in allowed domain",n_cust,failed)
 
 # V-018: discount_amount > subtotal on invoices (CRITICAL — financial)
-inv_numeric = inv.withColumn("sub_d", F.col("subtotal").cast("double")) \
-                 .withColumn("dis_d", F.col("discount_amount").cast("double"))
+inv_numeric = inv.withColumn("sub_d", F.try_cast(F.col("subtotal"), "double")) \
+                 .withColumn("dis_d", F.try_cast(F.col("discount_amount"), "double"))
 failed = inv_numeric.filter(
     F.col("sub_d").isNotNull() & F.col("dis_d").isNotNull() &
     (F.col("dis_d") > F.col("sub_d"))
@@ -381,9 +401,9 @@ failed = wo.filter(
 check("CS-003","Consistency","raw.work_orders","HIGH","Completed WO missing time data",n_wo,failed)
 
 # CS-004: total_cost ≠ labor + parts (HIGH)
-wo_costs = wo.withColumn("lc", F.col("labor_cost").cast("double")) \
-             .withColumn("pc", F.col("parts_cost").cast("double")) \
-             .withColumn("tc", F.col("total_cost").cast("double"))
+wo_costs = wo.withColumn("lc", F.try_cast(F.col("labor_cost"), "double")) \
+             .withColumn("pc", F.try_cast(F.col("parts_cost"), "double")) \
+             .withColumn("tc", F.try_cast(F.col("total_cost"), "double"))
 failed = wo_costs.filter(
     F.col("lc").isNotNull() & F.col("pc").isNotNull() & F.col("tc").isNotNull() &
     (F.abs((F.col("lc") + F.col("pc")) - F.col("tc")) > 0.01)
@@ -391,10 +411,10 @@ failed = wo_costs.filter(
 check("CS-004","Consistency","raw.work_orders","HIGH","total_cost does not equal labor+parts",n_wo,failed)
 
 # CS-005: Invoice total does not balance (CRITICAL)
-inv_n = inv.withColumn("sub", F.col("subtotal").cast("double")) \
-           .withColumn("tax", F.col("tax_amount").cast("double")) \
-           .withColumn("dis", F.col("discount_amount").cast("double")) \
-           .withColumn("tot", F.col("total_amount").cast("double"))
+inv_n = inv.withColumn("sub", F.try_cast(F.col("subtotal"), "double")) \
+           .withColumn("tax", F.try_cast(F.col("tax_amount"), "double")) \
+           .withColumn("dis", F.try_cast(F.col("discount_amount"), "double")) \
+           .withColumn("tot", F.try_cast(F.col("total_amount"), "double"))
 failed = inv_n.filter(
     F.col("sub").isNotNull() & F.col("tax").isNotNull() &
     F.col("dis").isNotNull() & F.col("tot").isNotNull() &
@@ -428,9 +448,9 @@ check("CS-007","Consistency","raw.work_order_assignments","HIGH","Terminated tec
 
 # CS-008: Payment received > invoice total (MEDIUM)
 failed = inv_n.filter(
-    F.col("payment_received").cast("double").isNotNull() &
+    F.try_cast(F.col("payment_received"), "double").isNotNull() &
     F.col("tot").isNotNull() &
-    (F.col("payment_received").cast("double") > F.col("tot"))
+    (F.try_cast(F.col("payment_received"), "double") > F.col("tot"))
 ).count()
 check("CS-008","Consistency","raw.invoices","MEDIUM","Payment received exceeds invoice total",n_inv,failed)
 
@@ -445,10 +465,10 @@ check("CS-009","Consistency","raw.invoices","HIGH","due_date before invoice_date
 
 # CS-010: actual_hours > 24 on same-day WO (MEDIUM)
 failed = wo_times.filter(
-    F.col("actual_hours").cast("double").isNotNull() &
-    (F.col("actual_hours").cast("double") > 24) &
+    F.try_cast(F.col("actual_hours"), "double").isNotNull() &
+    (F.try_cast(F.col("actual_hours"), "double") > 24) &
     F.col("start_ts").isNotNull() & F.col("end_ts").isNotNull() &
-    (F.datediff(F.col("end_ts").cast("date"), F.col("start_ts").cast("date")) == 0)
+    (F.datediff(F.try_cast(F.col("end_ts"), "date"), F.try_cast(F.col("start_ts"), "date")) == 0)
 ).count()
 check("CS-010","Consistency","raw.work_orders","MEDIUM","actual_hours > 24 on single-day WO",n_wo,failed)
 
@@ -465,7 +485,7 @@ check("CS-011","Consistency","raw.work_order_assignments","HIGH","Assignment end
 asgn_hours = asgn_times.filter(
     F.col("s").isNotNull() & F.col("e").isNotNull() & F.col("hours_logged").isNotNull()
 ).withColumn("calc_hrs", (F.unix_timestamp("e") - F.unix_timestamp("s")) / 3600) \
- .withColumn("logged",   F.col("hours_logged").cast("double"))
+ .withColumn("logged",   F.try_cast(F.col("hours_logged"), "double"))
 failed = asgn_hours.filter(
     F.col("logged").isNotNull() &
     (F.abs(F.col("logged") - F.col("calc_hrs")) > 1.0)
@@ -506,7 +526,7 @@ check("T-003","Timeliness","raw.work_orders","CRITICAL","Completed WO has future
 
 # T-004: Active customer not modified in 2+ years (LOW)
 failed = cust.filter(
-    F.upper(F.trim(F.col("account_status"))) == "ACTIVE" &
+    (F.upper(F.trim(F.col("account_status"))) == "ACTIVE") &
     F.to_timestamp("last_modified").isNotNull() &
     (F.datediff(today, F.to_date("last_modified")) > 730)
 ).count()
@@ -514,7 +534,7 @@ check("T-004","Timeliness","raw.customers","LOW","Active customer record stale >
 
 # T-005: IN_PROGRESS WO not updated in 90+ days (HIGH — zombie records)
 failed = wo.filter(
-    F.upper(F.trim(F.regexp_replace(F.col("status")," ","_"))) == "IN_PROGRESS" &
+    (F.upper(F.trim(F.regexp_replace(F.col("status")," ","_"))) == "IN_PROGRESS") &
     F.to_timestamp("last_modified").isNotNull() &
     (F.datediff(today, F.to_date("last_modified")) > 90)
 ).count()
@@ -556,7 +576,7 @@ check("BR-001","Business Rules","raw.work_orders","HIGH","Completed WO has no as
 # BR-002: COMPLETED WO with no invoice and positive cost (HIGH — revenue leakage)
 inv_wo_ids = inv.select("work_order_id").distinct()
 uninvoiced = (wo.filter(F.upper(F.trim(F.col("status"))).isin("COMPLETED","COMPLETE"))
-                .filter(F.col("total_cost").cast("double") > 0)
+                .filter(F.try_cast(F.col("total_cost"), "double") > 0)
                 .join(inv_wo_ids, "work_order_id", "left_anti"))
 failed = uninvoiced.count()
 check("BR-002","Business Rules","raw.work_orders","HIGH","Completed WO missing invoice (revenue leakage risk)",total,failed)
@@ -572,7 +592,7 @@ check("BR-003","Business Rules","raw.work_orders","HIGH","SLA flag does not matc
 
 # BR-004: PAID invoice with NULL payment_date (MEDIUM)
 failed = inv.filter(
-    F.upper(F.trim(F.col("invoice_status"))) == "PAID" &
+    (F.upper(F.trim(F.col("invoice_status"))) == "PAID") &
     F.col("payment_date").isNull()
 ).count()
 check("BR-004","Business Rules","raw.invoices","MEDIUM","PAID invoice missing payment_date",n_inv,failed)
@@ -580,8 +600,8 @@ check("BR-004","Business Rules","raw.invoices","MEDIUM","PAID invoice missing pa
 # BR-005: estimated_hours = 0 on a COMPLETED WO (MEDIUM)
 failed = wo.filter(
     F.upper(F.trim(F.col("status"))).isin("COMPLETED","COMPLETE") &
-    F.col("estimated_hours").cast("double").isNotNull() &
-    (F.col("estimated_hours").cast("double") == 0)
+    F.try_cast(F.col("estimated_hours"), "double").isNotNull() &
+    (F.try_cast(F.col("estimated_hours"), "double") == 0)
 ).count()
 check("BR-005","Business Rules","raw.work_orders","MEDIUM","Completed WO has estimated_hours = 0",n_wo,failed)
 

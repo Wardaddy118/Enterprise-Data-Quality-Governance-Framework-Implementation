@@ -35,17 +35,52 @@
 
 # COMMAND ----------
 
-COMMUNITY_EDITION = False
-CATALOG  = "fieldops_dq"
-RAW      = "raw"
-BATCH_ID = "BATCH-20240111"   # ← second day extract
+BATCH_ID = "BATCH-20240111"   # second day extract
+
+# -- Resolve runtime config written by notebook 01 ------------
+# Notebook 01 resolves catalog/schema names at runtime (dedicated
+# `fieldops_dq` catalog if CREATE CATALOG is permitted, else the
+# pre-provisioned `workspace` catalog with `fieldops_*` schemas).
+# We read that single source of truth instead of hardcoding, so
+# this notebook works under either branch with no edits.
+
+def _load_pipeline_config():
+    candidates = [
+        "fieldops_dq.audit.pipeline_config",        # dedicated-catalog branch
+        "workspace.fieldops_audit.pipeline_config", # fallback branch
+    ]
+    for tbl in candidates:
+        try:
+            rows = spark.table(tbl).collect()
+            cfg = {r["config_key"]: r["config_value"] for r in rows}
+            print(f"Loaded config from {tbl}")
+            return cfg
+        except Exception:
+            continue
+    raise RuntimeError(
+        "pipeline_config not found. Run notebook 01 first - it resolves "
+        "and persists the catalog/schema configuration."
+    )
+
+_cfg     = _load_pipeline_config()
+CATALOG  = _cfg["CATALOG"]
+RAW      = _cfg["RAW"]
+STAGING  = _cfg.get("STAGING",  "stg")
+CURATED  = _cfg.get("CURATED",  "curated")
+DQ       = _cfg.get("DQ",       "dq")
+AUDIT    = _cfg.get("AUDIT",    "audit")
+COMMUNITY_EDITION = False  # legacy flag - always 3-level UC namespace now
+
+print(f"  CATALOG = {CATALOG}")
+print(f"  RAW={RAW} STG={STAGING} CURATED={CURATED} DQ={DQ} AUDIT={AUDIT}")
+
 
 def t(table):
-    return f"{CATALOG}.{RAW}.{table}" if not COMMUNITY_EDITION else f"{RAW}.{table}"
+    return f"{CATALOG}.{RAW}.{table}"
 
 from pyspark.sql import Row
-from datetime import datetime
-now = datetime.utcnow()
+from datetime import datetime, timezone
+now = datetime.now(timezone.utc)
 
 # ── helper: append to raw table ──────────────────────────────
 def append(df, table_name):
