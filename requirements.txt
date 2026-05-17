@@ -1,0 +1,28 @@
+# =============================================================================
+# FieldOps Pro — CORE environment  (.venv)
+# Python 3.12 ONLY.  Install:  pip install -r requirements.txt
+#
+# Covers Phases 1-5: notebooks 01-05, the migration reconciliation layer,
+# datacompy comparison. This is the environment you use for everything
+# that runs PySpark via databricks-connect.
+#
+# dbt is NOT here. dbt-databricks caps databricks-sdk <0.78, but
+# databricks-connect 17.3 needs a newer sdk — the graphs are mutually
+# exclusive. dbt is a standalone CLI on a different execution path, so it
+# lives in its own venv (see requirements-dbt.txt). This separation is
+# intentional and standard practice, not a workaround.
+#
+# Only DIRECT deps are pinned; pandas/numpy/pyarrow float so the
+# databricks-connect + databricks-sql-connector graph stays solvable.
+# =============================================================================
+
+databricks-connect==17.3.*       # serverless Spark from local (notebooks 01-05, Phase 5)
+databricks-sql-connector==3.*    # external SQL client (notebook 05)
+python-dotenv==1.2.*             # .env for the external SQL client
+datacompy==0.16.*                # source-vs-target reconciliation (Phase 5 centerpiece)
+tabulate==0.9.*                  # markdown tables in the reconciliation report
+
+# databricks-sdk: intentionally NOT pinned — let databricks-connect pull
+#   the version it needs. (No dbt here, so no upper-bound conflict.)
+# pandas / numpy / pyarrow: intentionally NOT pinned — resolver settles them
+#   to the databricks-sql-connector ceiling (~pandas 2.2, numpy 2.2, pyarrow 24).

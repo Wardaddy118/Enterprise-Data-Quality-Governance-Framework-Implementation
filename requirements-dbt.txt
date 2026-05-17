@@ -1,0 +1,22 @@
+# =============================================================================
+# FieldOps Pro — dbt environment  (.venv-dbt)   ── Phase 6 ONLY ──
+# Python 3.12.  SEPARATE venv from .venv (incompatible databricks-sdk bounds).
+#
+# Create only when you reach Phase 6:
+#     py -3.12 -m venv .venv-dbt
+#     .\.venv-dbt\Scripts\Activate.ps1
+#     pip install -r requirements-dbt.txt
+#
+# Then dbt commands run from THIS venv:
+#     dbt --version
+#     dbt init / dbt run / dbt test
+#
+# Switch back to .venv for notebooks / reconciliation work. The two venvs
+# never run at the same time — dbt is a CLI on its own connection, not
+# something you import inside a databricks-connect script.
+# =============================================================================
+
+dbt-databricks==1.11.*           # pulls dbt-core 1.11.x, dbt-spark, a pinned databricks-sdk <0.78
+
+# Nothing else. dbt connects to Databricks over its own SQL connection
+# configured in profiles.yml — it does NOT use databricks-connect.

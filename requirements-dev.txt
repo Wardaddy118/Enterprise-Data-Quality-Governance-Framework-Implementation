@@ -1,0 +1,8 @@
+# =============================================================================
+# Dev tooling — OPTIONAL. Not needed to run the pipeline.
+#     pip install -r requirements-dev.txt
+# Useful for keeping the repo clean before commits (portfolio polish).
+# =============================================================================
+
+ruff==0.8.*          # fast linter + formatter (replaces black+flake8+isort)
+ipykernel==6.*       # run .py notebooks as Jupyter kernels locally if desired

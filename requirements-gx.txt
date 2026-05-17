@@ -1,0 +1,24 @@
+# =============================================================================
+# Great Expectations — OPTIONAL, Phase 6 (in-pipeline DQ alternative)
+# Install into the SAME venv ONLY when you reach the GX step:
+#     pip install -r requirements-gx.txt
+#
+# Why separate: GX pulls its own pinned pandas / marshmallow / pydantic
+# ranges that can conflict with databricks-connect 17.3. Keeping it out of
+# requirements.txt means a GX resolver conflict can never block the core
+# pipeline (Phases 1-5), which is the part that matters for IGT.
+#
+# CRITICAL: use the spark-connect extra, NOT plain [spark]. databricks-connect
+# gives you a Spark *Connect* session; GX's classic Spark datasource will not
+# attach to it. The spark-connect extra is what makes GX see the serverless
+# session created by databricks-connect.
+# =============================================================================
+
+great-expectations[spark-connect]==1.17.*
+
+# If the install above reports dependency conflicts with databricks-connect,
+# that is EXPECTED and acceptable — GX is optional in this project. Options:
+#   1. Accept the conflict (pip installs anyway; usually works for our use)
+#   2. Use a separate venv just for the GX exploration step
+#   3. Skip GX entirely — DLT expectations or the hand-rolled framework
+#      already cover the in-pipeline DQ story for the portfolio
