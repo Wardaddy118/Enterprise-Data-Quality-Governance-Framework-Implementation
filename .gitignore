@@ -5,3 +5,4 @@ __pycache__/
 .ipynb_checkpoints/
 *.csv
 databricks.yml
+.claude/settings.local.json
