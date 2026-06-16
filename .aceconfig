@@ -1,0 +1,68 @@
+framework: ace
+version: "2.6.2"
+project: FieldOps Pro – Databricks Migration QA Framework
+owner: Jose Araya
+domain: Data Engineering / QA / Migration Validation
+
+context:
+  always_load:
+    - .aceconfig
+    - .ace/roles/roles.md
+    - docs/context/ACTIVE_CONTEXT.md
+    - docs/context/PROJECT_CONTEXT.md
+
+  on_demand:
+    - .ace/standards/*
+    - .ace/skills/*
+    - docs/adr/*
+    - docs/rca/regression-guards.yaml
+    - docs/planning/implementation_plan.md
+
+rules:
+  - "Follow BMAD: Analyze → Discuss → Plan → Execute → Verify"
+  - "Always use try_cast (never cast) when reading raw/source data"
+  - "All Delta writes must be idempotent: delete-by-batch-id before insert"
+  - "Never use .cache() or .persist() – serverless compute does not support it"
+  - "All schema definitions must be explicit StructType (no inference on NULL columns)"
+  - "Catalog references must come from pipeline_config, never hardcoded"
+  - "Every defect detected by the reconciliation engine must be logged to migration_defects"
+  - "Severity levels: CRITICAL (data loss) | HIGH (hash mismatch) | MEDIUM (schema drift) | LOW (formatting)"
+  - "Check regression-guards.yaml before modifying any notebook or pipeline file"
+  - "Every significant architectural decision requires an ADR in docs/adr/"
+  - "Update ACTIVE_CONTEXT.md at the end of every working session"
+
+roles:
+  planning: Architect
+  execution: Developer
+  verification: QA Engineer
+  data_modeling: Data Modeler
+  incident: Incident Responder
+
+skills:
+  dq_framework:   .ace/skills/data-quality/SKILL.md
+  migration_qa:   .ace/skills/migration-qa/SKILL.md
+  dbt:            .ace/skills/dbt-models/SKILL.md
+  databricks:     .ace/skills/databricks-patterns/SKILL.md
+  reconciliation: .ace/skills/migration-qa/SKILL.md
+  quarantine:     .ace/skills/data-quality/SKILL.md
+  schema_drift:   .ace/skills/migration-qa/SKILL.md
+
+standards:
+  required:
+    - .ace/standards/coding.md
+    - .ace/standards/data-quality.md
+    - .ace/standards/migration-qa.md
+  optional:
+    - .ace/standards/git-workflow.md
+    - .ace/standards/databricks-env.md
+
+hooks:
+  pre_commit:
+    - "Confirm notebook is idempotent (delete-before-insert guard present)"
+    - "Confirm no hardcoded catalog names (use pipeline_config table)"
+    - "Confirm try_cast used for all raw-layer numeric casts"
+    - "Confirm migration_defects INSERT present for any new defect class"
+  pre_merge:
+    - "End-to-end notebook run: 01 → 02 → 02b → 03 → 04 → 06"
+    - "Reconciliation report generated with 0 unresolved CRITICAL defects"
+    - "README reflects current phase completion status"
