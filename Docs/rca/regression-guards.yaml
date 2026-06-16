@@ -1,0 +1,63 @@
+guards:
+
+  - file: "01_setup_catalog.ipynb"
+    reason: "Escribe pipeline_config – todos los notebooks downstream dependen de él"
+    invariants:
+      - "pipeline_config debe existir en workspace.fieldops_audit"
+      - "Al menos una fila con is_active=True"
+      - "catalog_name column no-null"
+    regression_tests:
+      - "Correr notebook 02 después de 01 – no debe dar error en pipeline_config read"
+    rca: null
+
+  - file: "02_load_dirty_data_a.ipynb"
+    reason: "RCA-001: append no-idempotente causó filas duplicadas"
+    invariants:
+      - "Delete-by-batch-id guard debe aparecer antes de cualquier INSERT"
+      - "Batch ID pasado como parámetro, no hardcodeado"
+      - "try_cast para todos los casts numéricos"
+    regression_tests:
+      - "Correr notebook dos veces con mismo BATCH_ID – row count idéntico"
+    rca: "docs/rca/RCA-001-non-idempotent-append.md"
+
+  - file: "02b_load_dirty_data_b.ipynb"
+    reason: "Mismo requerimiento de idempotencia que 02"
+    invariants:
+      - "Delete-by-batch-id antes de INSERT"
+      - "try_cast para columnas numéricas"
+    regression_tests:
+      - "Correr dos veces con mismo BATCH_ID – row count idéntico"
+    rca: "docs/rca/RCA-001-non-idempotent-append.md"
+
+  - file: "03_validation_framework.ipynb"
+    reason: "RCA-002: ANSI mode cast failure en columna revenue"
+    invariants:
+      - "Sin .cast() en columnas del raw layer"
+      - "Todos los violation records deben incluir rule_id, dimension, severity, batch_id"
+      - "Violaciones CRITICAL deben triggear quarantine write"
+    regression_tests:
+      - "Inyectar fila con revenue='$450,000' – no debe lanzar excepción, debe loggear V-003"
+      - "DQ score debe estar en [0, 1]"
+    rca: "docs/rca/RCA-002-ansi-cast-error.md"
+
+  - file: "04_staging_curated.ipynb"
+    reason: "Lee pipeline_config – referencia de catálogo no debe ser hardcodeada"
+    invariants:
+      - "Catalog name debe leerse desde pipeline_config"
+      - "Sin .cache() o .persist()"
+    regression_tests:
+      - "Row count de curated debe match staging después del DQ pass filter"
+    rca: null
+
+  - file: "06_migration_reconciliation.ipynb"
+    reason: "Entregable central IGT – las 6 técnicas deben correr y loggear a migration_defects"
+    invariants:
+      - "%pip install datacompy y dbutils.library.restartPython() deben ser cell 1"
+      - "Las 6 técnicas deben ejecutarse"
+      - "Cada defecto debe loggearse con severity y root_cause_hypothesis"
+      - "Reconciliation report markdown debe generarse al final"
+    regression_tests:
+      - "Defect class data_loss → CRITICAL en migration_defects"
+      - "Defect class schema_drift → MEDIUM/HIGH en migration_defects"
+      - "migration_defects debe tener ≥1 fila por cada defect class inyectado"
+    rca: null
